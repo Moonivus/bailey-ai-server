@@ -6,87 +6,58 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// פונקציית סטרימינג אמיתי מול OpenAI
-app.post("/api/stream", async (req, res) => {
+// פונקציית POST ראשית
+app.post("/bailey", async (req, res) => {
   const { message } = req.body;
 
-  res.setHeader("Content-Type", "text/event-stream");
-  res.setHeader("Cache-Control", "no-cache");
-  res.setHeader("Connection", "keep-alive");
-
-  const response = await fetch("https://api.openai.com/v1/chat/completions", {
-    method: "POST",
-    headers: {
-      "Authorization": `Bearer ${process.env.OPENAI_API_KEY}`,
-      "Content-Type": "application/json"
-    },
-    body: JSON.stringify({
-      model: "gpt-4o-mini", // מהיר מאוד לסטרימינג
-      messages: [{ role: "user", content: message }],
-      stream: true
-    })
-  });
-
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder("utf-8");
-
-  let textAccumulator = ""; // נשמור את הפלט כדי להעביר אח"כ ל-voice
-
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    const chunk = decoder.decode(value);
-    const lines = chunk.split("\n");
-
-    for (const line of lines) {
-      if (line.startsWith("data: ")) {
-        const data = line.replace("data: ", "").trim();
-        if (data === "[DONE]") {
-          res.write(`data: [DONE]\n\n`);
-          break;
-        }
-        try {
-          const json = JSON.parse(data);
-          const content = json.choices?.[0]?.delta?.content;
-          if (content) {
-            textAccumulator += content;
-            res.write(`data: ${content}\n\n`);
-          }
-        } catch (err) {}
-      }
-    }
-  }
-
-  // עכשיו נוסיף קריאה ל-ElevenLabs
   try {
-    const voiceResponse = await fetch("https://api.elevenlabs.io/v1/text-to-speech/EXAVITQu4vr4xnSDxMaL/stream", {
+    // שלב 1: שולח את ההודעה ל־OpenAI
+    const openaiResponse = await fetch("https://api.openai.com/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${process.env.OPENAI_API_KEY}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: "gpt-5",
+        messages: [{ role: "user", content: message }],
+        stream: false
+      }),
+    });
+
+    const openaiData = await openaiResponse.json();
+    const aiText = openaiData.choices?.[0]?.message?.content || "I'm not sure what to say.";
+
+    // שלב 2: שולח את התשובה לקול דרך ElevenLabs
+    const elevenResponse = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${process.env.ELEVENLABS_VOICE_ID}`, {
       method: "POST",
       headers: {
         "xi-api-key": process.env.ELEVENLABS_API_KEY,
         "Content-Type": "application/json"
       },
       body: JSON.stringify({
-        text: textAccumulator,
+        text: aiText,
+        model_id: "eleven_monolingual_v1",
         voice_settings: {
-          stability: 0.5,
-          similarity_boost: 0.7
+          stability: 0.4,
+          similarity_boost: 0.8
         }
       })
     });
 
-    const audioBuffer = await voiceResponse.arrayBuffer();
-    const base64Audio = Buffer.from(audioBuffer).toString("base64");
-    res.write(`data: [AUDIO:${base64Audio}]\n\n`);
+    const audioBuffer = await elevenResponse.arrayBuffer();
+    const audioBase64 = Buffer.from(audioBuffer).toString("base64");
+
+    // שלב 3: מחזיר גם טקסט וגם קול
+    res.json({
+      text: aiText,
+      audio: `data:audio/mpeg;base64,${audioBase64}`
+    });
+
   } catch (error) {
-    console.error("ElevenLabs error:", error);
+    console.error("Error:", error);
+    res.status(500).json({ error: "An error occurred", details: error.message });
   }
-
-  res.end();
 });
 
-// בדיקה פשוטה
-app.get("/", (req, res) => {
-  res.send("✅ Bailey AI Stream Server is running smoothly.");
-});
-
-app.listen(3000, () => console.log("🚀 Bailey backend running on port 3000"));
+app.listen(3000, () => console.log("✅ Bailey backend running with voice on port 3000"));
