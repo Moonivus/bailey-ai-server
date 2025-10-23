@@ -3,7 +3,14 @@ import fetch from "node-fetch";
 import cors from "cors";
 
 const app = express();
-app.use(cors());
+
+// הפעלת CORS פתוחה לכל הדומיינים
+app.use(cors({
+  origin: "*",
+  methods: ["GET", "POST", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "Authorization"]
+}));
+
 app.use(express.json());
 
 // עוזר קטן: קריאת OpenAI (מודל ברירת מחדל ניתן לשינוי דרך ENV)
