@@ -1,14 +1,14 @@
 {
   "name": "bailey-ai-server",
   "version": "1.0.0",
+  "description": "Server for Bailey AI streaming and voice integration",
   "main": "index.js",
-  "type": "module",
- "dependencies": {
-  "express": "^4.18.2",
-  "node-fetch": "^3.3.2",
-  "cors": "^2.8.5"
-}
   "scripts": {
     "start": "node index.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "node-fetch": "^3.3.2",
+    "cors": "^2.8.5"
   }
 }
