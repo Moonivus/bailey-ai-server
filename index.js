@@ -49,12 +49,6 @@ async function elevenLabsTTS(text) {
       body: JSON.stringify({
         text,
         model_id: modelId,
-        voice_settings: {
-          stability: 0.4,
-          similarity_boost: 0.8,
-          style: 0.4,
-          use_speaker_boost: true,
-        },
       }),
     });
     if (!r.ok) {
