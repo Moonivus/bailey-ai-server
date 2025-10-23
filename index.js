@@ -83,6 +83,9 @@ async function elevenLabsTTS(text) {
 
 // נקודת הקצה הראשית
 app.post("/bailey", async (req, res) => {
+   const userMessage = req.body.message;
+  console.log("📩 Incoming message:", userMessage); // <-- תיעוד קבלת הודעה
+  
   try {
     const { message } = req.body;
     if (!message || typeof message !== "string") {
