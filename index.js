@@ -99,7 +99,10 @@ app.post("/bailey", async (req, res) => {
     const audioDataUrl = await elevenLabsTTS(aiText);
 
     // 3) החזרה
-    res.json({ text: aiText, audio: audioDataUrl });
+   res.json({
+  text: aiResponse,
+  audio_url: audioUrl
+});
   } catch (err) {
     console.error("❌ Server error:", err.message);
     res.status(500).json({ error: "Server error", details: err.message });
