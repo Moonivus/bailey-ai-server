@@ -88,11 +88,19 @@ app.post("/bailey", async (req, res) => {
   }
 
   try {
+    // קבלת טקסט מ-OpenAI
     const text = await getOpenAIText(message);
+    // הפקת קול מ-ElevenLabs
     const audioUrl = await elevenLabsTTS(text);
 
-    // שדות כפי שבייס44 מצפה להם:
-    res.json({ text, audio_url: audioUrl });
+    // ✅ החזרה בפורמט כפול — גם ל-Base44 וגם לתיעוד רגיל
+    res.json({
+      reply: text,         // ← Base44 מצפה לזה
+      audio_url: audioUrl, // ← גם לזה
+      text,                // ← שמירה לתאימות פנימית
+      audio: audioUrl      // ← שמירה לתאימות כללית
+    });
+
   } catch (err) {
     console.error("❌ Server error:", err.message);
     res.status(500).json({ error: "Server error", details: err.message });
