@@ -80,30 +80,34 @@ async function elevenLabsTTS(text) {
 
 // -------- נקודת קצה לביילי --------
 app.post("/bailey", async (req, res) => {
-  const { message } = req.body;
-  console.log("📩 Incoming message:", message);
-
-  if (!message || typeof message !== "string") {
-    return res.status(400).json({ error: "Missing 'message' (string) in body" });
-  }
-
   try {
-    // קבלת טקסט מ-OpenAI
+    const { message } = req.body;
+    console.log("📩 Incoming message:", message);
+
+    if (!message || typeof message !== "string") {
+      return res.status(400).json({ error: "Missing 'message' (string) in body" });
+    }
+
+    // 1️⃣ קבלת תשובה מטקסט של OpenAI
     const text = await getOpenAIText(message);
-    // הפקת קול מ-ElevenLabs
-    const audioUrl = await elevenLabsTTS(text);
 
-    // ✅ החזרה בפורמט כפול — גם ל-Base44 וגם לתיעוד רגיל
-    res.json({
-      reply: text,         // ← Base44 מצפה לזה
-      audio_url: audioUrl, // ← גם לזה
-      text,                // ← שמירה לתאימות פנימית
-      audio: audioUrl      // ← שמירה לתאימות כללית
+    // 2️⃣ יצירת קול ב-ElevenLabs (אם נכשל — ממשיכים רק עם טקסט)
+    let audioUrl = null;
+    try {
+      audioUrl = await elevenLabsTTS(text);
+    } catch (ttsErr) {
+      console.warn("⚠️ ElevenLabs TTS failed:", ttsErr.message);
+    }
+
+    // 3️⃣ החזרת תשובה בפורמט אחיד שבייס44 תדע לקרוא
+    res.status(200).json({
+      text, // <--- השדה שבייס44 צריכה כדי להציג את ההודעה
+      audio: audioUrl || null, // <--- השדה שאפשר לנגן אם יש קול
+      success: true
     });
-
   } catch (err) {
     console.error("❌ Server error:", err.message);
-    res.status(500).json({ error: "Server error", details: err.message });
+    res.status(500).json({ error: "Server error", details: err.message, success: false });
   }
 });
 
