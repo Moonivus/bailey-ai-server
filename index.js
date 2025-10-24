@@ -4,18 +4,20 @@ import cors from "cors";
 
 const app = express();
 
-// הפעלת CORS פתוחה לכל הדומיינים
-app.use(cors({
-  origin: "*",
-  methods: ["GET", "POST", "OPTIONS"],
-  allowedHeaders: ["Content-Type", "Authorization"]
-}));
-
+// CORS פתוח
+app.use(
+  cors({
+    origin: "*",
+    methods: ["GET", "POST", "OPTIONS"],
+    allowedHeaders: ["Content-Type", "Authorization"],
+  })
+);
 app.use(express.json());
 
-// עוזר קטן: קריאת OpenAI (מודל ברירת מחדל ניתן לשינוי דרך ENV)
+// -------- OpenAI (טקסט) --------
 async function getOpenAIText(userText) {
   const model = process.env.OPENAI_MODEL || "gpt-4o-mini";
+
   const r = await fetch("https://api.openai.com/v1/chat/completions", {
     method: "POST",
     headers: {
@@ -28,87 +30,78 @@ async function getOpenAIText(userText) {
       stream: false,
     }),
   });
+
   if (!r.ok) {
     const body = await r.text();
     throw new Error(`OpenAI error ${r.status}: ${body}`);
   }
+
   const data = await r.json();
-  return data?.choices?.[0]?.message?.content?.trim() || "לא הצלחתי להבין. אפשר לנסח שוב?";
+  const text =
+    data?.choices?.[0]?.message?.content?.trim() ||
+    "לא הצלחתי להבין, אפשר לנסח שוב?";
+  console.log("🧠 OpenAI:", text);
+  return text;
 }
 
-// עוזר קטן: קריאת ElevenLabs עם מודל v3 + נפילה ל-alpha במקרה הצורך
+// -------- ElevenLabs (קול) --------
+// ברירת מחדל: eleven_v3 (כפי שביקשת)
 async function elevenLabsTTS(text) {
-  const voiceId = process.env.ELEVENLABS_VOICE_ID; // חובה
+  const voiceId = process.env.ELEVENLABS_VOICE_ID;
   if (!voiceId) throw new Error("Missing ELEVENLABS_VOICE_ID");
 
-  // עדיפות למודל מה-ENV, אחרת v3 רגיל, ואם נכשל — ננסה v3_alpha
-  const primaryModel = process.env.ELEVENLABS_MODEL_ID || "eleven_v3";
-  const fallbackModel = "eleven_v3_alpha";
+  const modelId = process.env.ELEVENLABS_MODEL_ID || "eleven_v3";
+  console.log("🎤 ElevenLabs model:", modelId);
 
-  async function ttsWith(modelId) {
-    const r = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${voiceId}`, {
+  const r = await fetch(
+    `https://api.elevenlabs.io/v1/text-to-speech/${voiceId}`,
+    {
       method: "POST",
       headers: {
         "xi-api-key": process.env.ELEVENLABS_API_KEY,
         "Content-Type": "application/json",
-        Accept: "audio/mpeg", // חשוב להחזיר ישירות MPEG
+        Accept: "audio/mpeg",
       },
       body: JSON.stringify({
         text,
-        model_id: modelId,
+        model_id: modelId, // ← בדיוק eleven_v3
       }),
-    });
-    if (!r.ok) {
-      const body = await r.text();
-      throw new Error(`ElevenLabs error ${r.status} (${modelId}): ${body}`);
     }
-    const buf = Buffer.from(await r.arrayBuffer());
-    return `data:audio/mpeg;base64,${buf.toString("base64")}`;
+  );
+
+  if (!r.ok) {
+    const body = await r.text();
+    throw new Error(`ElevenLabs error ${r.status} (${modelId}): ${body}`);
   }
 
-  try {
-    return await ttsWith(primaryModel);
-  } catch (e1) {
-    // נסיון אוטומטי ל-alpha אם הראשי נכשל
-    if (primaryModel !== fallbackModel) {
-      try {
-        return await ttsWith(fallbackModel);
-      } catch (e2) {
-        throw e2; // דווח את השגיאה של הניסיון השני
-      }
-    }
-    throw e1;
-  }
+  const buf = Buffer.from(await r.arrayBuffer());
+  return `data:audio/mpeg;base64,${buf.toString("base64")}`;
 }
 
-// נקודת הקצה הראשית
+// -------- נקודת קצה לביילי --------
 app.post("/bailey", async (req, res) => {
-   const userMessage = req.body.message;
-  console.log("📩 Incoming message:", userMessage); // <-- תיעוד קבלת הודעה
-  
+  const { message } = req.body;
+  console.log("📩 Incoming message:", message);
+
+  if (!message || typeof message !== "string") {
+    return res.status(400).json({ error: "Missing 'message' (string) in body" });
+  }
+
   try {
-    const { message } = req.body;
-    if (!message || typeof message !== "string") {
-      return res.status(400).json({ error: "Missing 'message' (string) in body" });
-    }
+    const text = await getOpenAIText(message);
+    const audioUrl = await elevenLabsTTS(text);
 
-    // 1) טקסט מ-OpenAI
-    const aiText = await getOpenAIText(message);
-
-    // 2) קול מ-ElevenLabs v3 (עם Fallback אוטומטי)
-    const audioDataUrl = await elevenLabsTTS(aiText);
-
-    // 3) החזרה
-  res.json({ message: aiText, audio: audioDataUrl });
+    // שדות כפי שבייס44 מצפה להם:
+    res.json({ text, audio_url: audioUrl });
   } catch (err) {
     console.error("❌ Server error:", err.message);
     res.status(500).json({ error: "Server error", details: err.message });
   }
 });
 
-// ברירת מחדל לבדיקה מהירה
+// ברירת מחדל / בריאות
 app.get("/", (_req, res) => res.send("✅ Bailey AI server is up"));
 
 app.listen(3000, () => {
-  console.log("✅ Bailey AI server (OpenAI + ElevenLabs v3) running on port 3000");
+  console.log("✅ Bailey AI server running on port 3000");
 });
