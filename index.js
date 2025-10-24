@@ -81,70 +81,105 @@ async function elevenLabsTTS(text) {
 // -------- נקודת קצה לביילי --------
 app.post("/bailey", async (req, res) => {
   const t0 = Date.now();
-  const { message, mode } = req.body || {};
+  const { message } = req.body || {};
   console.log("📩 Incoming message:", message);
 
   if (!message || typeof message !== "string") {
     return res.status(400).json({ error: "Missing 'message' (string) in body" });
   }
 
+  // כיוון שמדובר ב־stream — נכין את הכותרות מראש:
+  res.setHeader("Content-Type", "text/event-stream");
+  res.setHeader("Cache-Control", "no-store");
+  res.setHeader("Connection", "keep-alive");
+
   try {
-    // 1) טקסט
-    const aiText = await getOpenAIText(message);
+    // יצירת בקשה ל־OpenAI במצב סטרים
+    const r = await fetch("https://api.openai.com/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: process.env.OPENAI_MODEL || "gpt-4o-mini",
+        messages: [{ role: "user", content: message }],
+        stream: true,
+      }),
+    });
 
-    // תמיכה בבדיקת טקסט-בלבד (כדי לבודד את Base44)
-    if (mode === "textOnly") {
-      const payload = {
-        // השדות שבייס44 מצפה להם:
-        text: aiText,
-        audio: null,
-        // תאימות לאחור/קדימה:
-        message: aiText,
-        audio_url: null
-      };
-      console.log("✅ Sending TEXT-ONLY response:", payload);
-      res.setHeader("Content-Type", "application/json");
-      res.setHeader("Cache-Control", "no-store");
-      return res.status(200).json(payload);
+    if (!r.ok) {
+      const errBody = await r.text();
+      throw new Error(`OpenAI stream error ${r.status}: ${errBody}`);
     }
 
-    // 2) אודיו
-    // ⚠️ חשוב: Base44 מצפה ל <audio_url_if_available>. עדיף URL אמיתי (http/https).
-    // אם כרגע אין לך אחסון לקובץ, זמנית נחזיר ללא אודיו כדי לא לחסום את התצוגה.
-    // כשתרצה אודיו, שמור את ה-MP3 ל-Object Storage/CDN והחזר URL.
+    // קריאת הזרם של OpenAI
+    const reader = r.body.getReader();
+    const decoder = new TextDecoder();
+    let fullText = "";
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      const chunk = decoder.decode(value, { stream: true });
+      const lines = chunk.split("\n").filter((l) => l.trim().startsWith("data: "));
+      for (const line of lines) {
+        if (line.includes("[DONE]")) continue;
+        try {
+          const data = JSON.parse(line.replace("data: ", ""));
+          const delta = data?.choices?.[0]?.delta?.content;
+          if (delta) {
+            fullText += delta;
+            res.write(`data: ${JSON.stringify({ text: delta })}\n\n`);
+          }
+        } catch (e) {
+          console.warn("⚠️ Parse stream chunk failed:", e.message);
+        }
+      }
+    }
+
+    // לאחר סיום הסטרים — נייצר קול בעזרת ElevenLabs
+    console.log("🧠 Full AI text:", fullText);
     let audioUrl = null;
-    try {
-      // אם אתה *חייב* כרגע Data-URI, זה יעבוד לעתים — אבל עלול לתקוע קליינטים.
-      // const dataUri = await elevenLabsTTS(aiText);
-      // audioUrl = dataUri;
 
-      // המלצה: עדכון עתידי – לשמור את ה-MP3 זמנית ולתת URL אמיתי.
-      // בינתיים נשאיר null כדי לוודא שהטקסט מוצג בביילי בלי תקיעות.
-      audioUrl = null;
+    try {
+      const voiceId = process.env.ELEVENLABS_VOICE_ID;
+      const modelId = process.env.ELEVENLABS_MODEL_ID || "eleven_v3";
+
+      const tts = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${voiceId}`, {
+        method: "POST",
+        headers: {
+          "xi-api-key": process.env.ELEVENLABS_API_KEY,
+          "Content-Type": "application/json",
+          Accept: "audio/mpeg",
+        },
+        body: JSON.stringify({
+          text: fullText,
+          model_id: modelId,
+        }),
+      });
+
+      if (!tts.ok) {
+        throw new Error(`TTS failed ${tts.status}`);
+      }
+
+      const buf = Buffer.from(await tts.arrayBuffer());
+      audioUrl = `data:audio/mpeg;base64,${buf.toString("base64")}`;
     } catch (e) {
-      console.warn("⚠️ TTS failed, continuing with text only:", e.message);
+      console.warn("⚠️ TTS generation failed:", e.message);
       audioUrl = null;
     }
 
-    // 3) שליחה – גם וגם (text/audio + message/audio_url) כדי שלא תהיה תלות בשם שדה
-    const payload = {
-      text: aiText,           // מה שבייס44 מצפה לפי ההנחיות בפאנל
-      audio: audioUrl,        // URL לקובץ אם קיים (כרגע null)
-      message: aiText,        // תאימות לאחור
-      audio_url: audioUrl     // תאימות לאחור
-    };
+    // סיום ושליחת ההודעה הסופית לבייס44
+    res.write(`data: ${JSON.stringify({ done: true, full_text: fullText, audio_url: audioUrl })}\n\n`);
+    res.end();
 
-    console.log(
-      `✅ Sending response (${Date.now() - t0}ms):`,
-      { textLen: aiText?.length, hasAudio: !!audioUrl }
-    );
-    res.setHeader("Content-Type", "application/json");
-    res.setHeader("Cache-Control", "no-store");
-    return res.status(200).json(payload);
+    console.log(`✅ Completed full stream (${Date.now() - t0}ms)`);
 
   } catch (err) {
-    console.error("❌ Server error:", err.stack || err.message);
-    return res.status(500).json({ error: "Server error", details: err.message });
+    console.error("❌ Server error:", err.message);
+    res.write(`data: ${JSON.stringify({ error: err.message })}\n\n`);
+    res.end();
   }
 });
 
