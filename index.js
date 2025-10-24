@@ -80,7 +80,6 @@ async function elevenLabsTTS(text) {
 
 // -------- נקודת קצה לביילי --------
 app.post("/bailey", async (req, res) => {
-  const t0 = Date.now();
   const { message } = req.body || {};
   console.log("📩 Incoming message:", message);
 
@@ -88,98 +87,33 @@ app.post("/bailey", async (req, res) => {
     return res.status(400).json({ error: "Missing 'message' (string) in body" });
   }
 
-  // כיוון שמדובר ב־stream — נכין את הכותרות מראש:
-  res.setHeader("Content-Type", "text/event-stream");
-  res.setHeader("Cache-Control", "no-store");
-  res.setHeader("Connection", "keep-alive");
-
   try {
-    // יצירת בקשה ל־OpenAI במצב סטרים
-    const r = await fetch("https://api.openai.com/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        model: process.env.OPENAI_MODEL || "gpt-4o-mini",
-        messages: [{ role: "user", content: message }],
-        stream: true,
-      }),
-    });
+    // שלב 1: טקסט מ־OpenAI (לא stream)
+    const aiText = await getOpenAIText(message);
 
-    if (!r.ok) {
-      const errBody = await r.text();
-      throw new Error(`OpenAI stream error ${r.status}: ${errBody}`);
-    }
-
-    // קריאת הזרם של OpenAI
-    const reader = r.body.getReader();
-    const decoder = new TextDecoder();
-    let fullText = "";
-
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      const chunk = decoder.decode(value, { stream: true });
-      const lines = chunk.split("\n").filter((l) => l.trim().startsWith("data: "));
-      for (const line of lines) {
-        if (line.includes("[DONE]")) continue;
-        try {
-          const data = JSON.parse(line.replace("data: ", ""));
-          const delta = data?.choices?.[0]?.delta?.content;
-          if (delta) {
-            fullText += delta;
-            res.write(`data: ${JSON.stringify({ text: delta })}\n\n`);
-          }
-        } catch (e) {
-          console.warn("⚠️ Parse stream chunk failed:", e.message);
-        }
-      }
-    }
-
-    // לאחר סיום הסטרים — נייצר קול בעזרת ElevenLabs
-    console.log("🧠 Full AI text:", fullText);
+    // שלב 2: הפקת אודיו (אם תרצה, כרגע נשתמש ב-eleven_v3)
     let audioUrl = null;
-
     try {
-      const voiceId = process.env.ELEVENLABS_VOICE_ID;
-      const modelId = process.env.ELEVENLABS_MODEL_ID || "eleven_v3";
-
-      const tts = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${voiceId}`, {
-        method: "POST",
-        headers: {
-          "xi-api-key": process.env.ELEVENLABS_API_KEY,
-          "Content-Type": "application/json",
-          Accept: "audio/mpeg",
-        },
-        body: JSON.stringify({
-          text: fullText,
-          model_id: modelId,
-        }),
-      });
-
-      if (!tts.ok) {
-        throw new Error(`TTS failed ${tts.status}`);
-      }
-
-      const buf = Buffer.from(await tts.arrayBuffer());
-      audioUrl = `data:audio/mpeg;base64,${buf.toString("base64")}`;
-    } catch (e) {
-      console.warn("⚠️ TTS generation failed:", e.message);
+      audioUrl = await elevenLabsTTS(aiText);
+    } catch (err) {
+      console.warn("⚠️ ElevenLabs failed, returning text only:", err.message);
       audioUrl = null;
     }
 
-    // סיום ושליחת ההודעה הסופית לבייס44
-    res.write(`data: ${JSON.stringify({ done: true, full_text: fullText, audio_url: audioUrl })}\n\n`);
-    res.end();
+    // שלב 3: תשובה אחידה בפורמט שבייס44 מצפה
+    const payload = {
+      text: aiText,
+      audio_url: audioUrl,
+      message: aiText,
+      audio: audioUrl
+    };
 
-    console.log(`✅ Completed full stream (${Date.now() - t0}ms)`);
+    console.log("✅ Response to Base44:", payload);
+    res.status(200).json(payload);
 
   } catch (err) {
     console.error("❌ Server error:", err.message);
-    res.write(`data: ${JSON.stringify({ error: err.message })}\n\n`);
-    res.end();
+    res.status(500).json({ error: "Server error", details: err.message });
   }
 });
 
